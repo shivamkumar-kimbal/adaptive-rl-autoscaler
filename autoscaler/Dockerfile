@@ -7,10 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ && \
     rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Copy requirements first for layer cache
+COPY autoscaler/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copy autoscaler package and evaluation module (needed by orchestrator)
+COPY autoscaler/ ./autoscaler/
+COPY evaluation/ ./evaluation/
 
 # Create runtime directories
 RUN mkdir -p /tmp/rl_autoscaler/models /tmp/rl_autoscaler/logs

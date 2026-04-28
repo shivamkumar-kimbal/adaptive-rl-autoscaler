@@ -1,5 +1,3 @@
-version: "3.9"
-
 # AWARE-inspired RL Autoscaler — full local stack (no Minikube required).
 #
 # Services:
@@ -34,7 +32,7 @@ services:
     networks:
       - rl-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -103,8 +101,8 @@ services:
   # ── RL Autoscaler (docker-compose mode — no real k8s, uses mock scaler) ─────
   autoscaler:
     build:
-      context: ./autoscaler
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: autoscaler/Dockerfile
     container_name: rl-autoscaler
     networks:
       - rl-net
