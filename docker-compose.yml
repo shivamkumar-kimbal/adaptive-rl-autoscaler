@@ -1,0 +1,129 @@
+version: "3.9"
+
+# AWARE-inspired RL Autoscaler — full local stack (no Minikube required).
+#
+# Services:
+#   workload    – FastAPI app being autoscaled (port 8000)
+#   prometheus  – Metrics collection (port 9090)
+#   grafana     – Dashboard (port 3000)  admin/admin
+#   locust      – Load generator (port 8089)
+#   autoscaler  – RL controller (no public port; talks to k8s API or mock)
+#
+# Start:  docker-compose up --build
+# Stop:   docker-compose down -v
+
+networks:
+  rl-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  autoscaler-data:
+
+services:
+
+  # ── Target workload ─────────────────────────────────────────────────────────
+  workload:
+    build:
+      context: ./workload
+      dockerfile: Dockerfile
+    container_name: workload-app
+    ports:
+      - "8000:8000"
+    networks:
+      - rl-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      prometheus.scrape: "true"
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - rl-net
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - workload
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - rl-net
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./docker/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./docker/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./k8s/monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/rl-autoscaler.json:ro
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+
+  # ── Locust load generator ───────────────────────────────────────────────────
+  locust:
+    image: locustio/locust:2.19.1
+    container_name: locust
+    ports:
+      - "8089:8089"
+    networks:
+      - rl-net
+    volumes:
+      - ./load_generator:/mnt/locust
+    command: >
+      -f /mnt/locust/locustfile.py
+      --host=http://workload:8000
+      --web-host=0.0.0.0
+    environment:
+      BASE_USERS: "5"
+      PEAK_USERS: "40"
+      PERIOD_SECONDS: "180"
+    depends_on:
+      workload:
+        condition: service_healthy
+
+  # ── RL Autoscaler (docker-compose mode — no real k8s, uses mock scaler) ─────
+  autoscaler:
+    build:
+      context: ./autoscaler
+      dockerfile: Dockerfile
+    container_name: rl-autoscaler
+    networks:
+      - rl-net
+    volumes:
+      - autoscaler-data:/data
+    environment:
+      K8S_CONFIG_MODE: "mock"          # uses MockScaler in docker-compose mode
+      PROMETHEUS_URL: "http://prometheus:9090"
+      PROMETHEUS_JOB_WORKLOAD: "workload-app"
+      PROMETHEUS_CONTAINER_NAME: "workload-app"
+      SLO_LATENCY_MS: "500"
+      ALPHA: "0.7"
+      MIN_REPLICAS: "1"
+      MAX_REPLICAS: "10"
+      MIN_BOOTSTRAP_STEPS: "200"       # lower for faster demo
+      CONTROL_INTERVAL_SECONDS: "15"
+      LOG_DIR: "/data/logs"
+      MODEL_DIR: "/data/models"
+      METRICS_CSV_PATH: "/data/logs/metrics.csv"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
